@@ -17,6 +17,10 @@ ImmediateAtlasGenerator<T, N, GEN_FN, AtlasStorage>::ImmediateAtlasGenerator(int
 
 template <typename T, int N, GeneratorFunction<T, N> GEN_FN, class AtlasStorage>
 void ImmediateAtlasGenerator<T, N, GEN_FN, AtlasStorage>::generate(const GlyphGeometry *glyphs, int count) {
+    auto threadCountForBufferCalculation = threadCount;
+    if ( 0 == threadCountForBufferCalculation)
+      threadCountForBufferCalculation = 1;
+
     int maxBoxArea = 0;
     for (int i = 0; i < count; ++i) {
         GlyphBox box = glyphs[i];
@@ -24,14 +28,31 @@ void ImmediateAtlasGenerator<T, N, GEN_FN, AtlasStorage>::generate(const GlyphGe
         layout.push_back((GlyphBox &&) box);
     }
     int threadBufferSize = N*maxBoxArea;
-    if (threadCount*threadBufferSize > (int) glyphBuffer.size())
-        glyphBuffer.resize(threadCount*threadBufferSize);
-    if (threadCount*maxBoxArea > (int) errorCorrectionBuffer.size())
-        errorCorrectionBuffer.resize(threadCount*maxBoxArea);
-    std::vector<GeneratorAttributes> threadAttributes(threadCount);
-    for (int i = 0; i < threadCount; ++i) {
+    if ( threadCountForBufferCalculation * threadBufferSize > (int) glyphBuffer.size())
+        glyphBuffer.resize(threadCountForBufferCalculation * threadBufferSize);
+    if ( threadCountForBufferCalculation * maxBoxArea > (int) errorCorrectionBuffer.size())
+        errorCorrectionBuffer.resize(threadCountForBufferCalculation * maxBoxArea);
+    std::vector<GeneratorAttributes> threadAttributes(threadCountForBufferCalculation);
+    for (int i = 0; i < threadCountForBufferCalculation; ++i) {
         threadAttributes[i] = attributes;
         threadAttributes[i].config.errorCorrection.buffer = errorCorrectionBuffer.data()+i*maxBoxArea;
+    }
+
+    if (threadCount == 0)
+    {
+        for (size_t i = 0; i < count; i++)
+        {
+            const auto& glyph = glyphs[i];
+            if (glyph.isWhitespace())
+              continue;
+
+            int l, b, w, h;
+            glyph.getBoxRect(l, b, w, h);
+            msdfgen::BitmapRef<T, N> glyphBitmap(glyphBuffer.data(), w, h);
+            GEN_FN(glyphBitmap, glyph, threadAttributes[0]);
+            storage.put(l, b, msdfgen::BitmapConstRef<T, N>(glyphBitmap));
+        }
+        return;
     }
 
     Workload([this, glyphs, &threadAttributes, threadBufferSize](int i, int threadNo) -> bool {
